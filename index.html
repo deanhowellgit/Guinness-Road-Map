@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Guinness Road Map</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+  <style>
+    body, html { margin: 0; padding: 0; height: 100%; }
+    #map { width: 100%; height: 100vh; }
+    .legend {
+      position: absolute;
+      bottom: 10px;
+      left: 10px;
+      background: white;
+      padding: 10px;
+      border-radius: 5px;
+      font-family: sans-serif;
+      box-shadow: 0 0 6px rgba(0,0,0,0.2);
+    }
+    .leaflet-marker-icon:hover {
+      transform: scale(1.2);
+    }
+    .reset-btn {
+      position: absolute;
+      bottom: 80px;
+      left: 10px;
+      z-index: 1000;
+      padding: 6px 10px;
+      border: none;
+      background: #333;
+      color: white;
+      border-radius: 5px;
+      cursor: pointer;
+    }
+    .popup-content {
+      text-align: center;
+      max-width: 200px;
+    }
+    .popup-content img {
+      width: 100%;
+      border-radius: 6px;
+      margin-bottom: 6px;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div class="legend" id="legend"></div>
+  <button onclick="resetMap()" class="reset-btn">Reset View</button>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script>
+    const map = L.map('map').setView([53.4, -7.5], 6);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 18,
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    let totalPubs = 0;
+    let totalPints = 0;
+    const townGroups = {};
+    const townMarkers = {};
+    let activePubMarkers = [];
+    let activeTownMarkers = [];
+    let townRoute = null;
+    let pubRoute = null;
+
+    function createScaledIcon(pints) {
+      const size = 20 + pints * 3;
+      return L.icon({
+        iconUrl: 'images/guinnessharp.svg',
+        iconSize: [size, size],
+        iconAnchor: [size / 2, size],
+        popupAnchor: [0, -size / 2]
+      });
+    }
+
+    function createTownIcon() {
+      return L.icon({
+        iconUrl: 'https://cdn-icons-png.flaticon.com/512/854/854878.png',
+        iconSize: [28, 28],
+        iconAnchor: [14, 28],
+        popupAnchor: [0, -28]
+      });
+    }
+
+    function createPopupContent(pub) {
+      const img = pub.image ? `<img src="${pub.image}" alt="${pub.pub}" />` : '';
+      return `
+        <div class="popup-content">
+          ${img}
+          <h3>${pub.pub}</h3>
+          <p><strong>Town:</strong> ${pub.town}</p>
+          <p><strong>Pints:</strong> ${pub.pints}</p>
+        </div>
+      `;
+    }
+
+    function fetchOSRMRoute(coords, callback) {
+      const coordStr = coords.map(c => c[1] + ',' + c[0]).join(';');
+      fetch(`https://router.project-osrm.org/route/v1/driving/${coordStr}?overview=full&geometries=geojson`)
+        .then(res => res.json())
+        .then(data => {
+          if (data.routes && data.routes.length > 0) {
+            const line = L.geoJSON(data.routes[0].geometry, {
+              style: { color: 'red', weight: 3 }
+            }).addTo(map);
+            callback(line);
+          }
+        });
+    }
+
+    function resetMap() {
+      map.setView([53.4, -7.5], 6);
+      activePubMarkers.forEach(m => map.removeLayer(m));
+      activeTownMarkers.forEach(m => m.addTo(map));
+      if (townRoute) townRoute.addTo(map);
+      if (pubRoute) {
+        map.removeLayer(pubRoute);
+        pubRoute = null;
+      }
+      activePubMarkers = [];
+    }
+
+    fetch('pubs.json')
+      .then(response => response.json())
+      .then(pubs => {
+        pubs.forEach(pub => {
+          if (pub.pints > 0) totalPubs++;
+          totalPints += pub.pints;
+          if (!townGroups[pub.town]) townGroups[pub.town] = [];
+          townGroups[pub.town].push(pub);
+        });
+
+        const townOrder = [];
+        for (const town in townGroups) {
+          const pubsInTown = townGroups[town];
+          const townLat = pubsInTown[0].lat;
+          const townLng = pubsInTown[0].lng;
+
+          townOrder.push([townLat, townLng]);
+
+          const townMarker = L.marker([townLat, townLng], { icon: createTownIcon() })
+            .addTo(map)
+            .bindPopup(`<strong>${town}</strong><br>Click to explore pubs`);
+
+          activeTownMarkers.push(townMarker);
+
+          townMarkers[town] = pubsInTown.map(pub =>
+            L.marker([pub.lat, pub.lng], { icon: createScaledIcon(pub.pints) })
+              .bindPopup(createPopupContent(pub))
+          );
+
+          townMarker.on('click', () => {
+            resetMap();
+            map.setView([townLat, townLng], 14);
+            map.removeLayer(townMarker);
+            activeTownMarkers = activeTownMarkers.filter(m => m !== townMarker);
+            townMarkers[town].forEach(marker => {
+              marker.addTo(map);
+              activePubMarkers.push(marker);
+            });
+
+            const pubCoords = townGroups[town].map(p => [p.lat, p.lng]);
+            if (pubCoords.length > 1) {
+              fetchOSRMRoute(pubCoords, route => pubRoute = route);
+            }
+            if (townRoute) map.removeLayer(townRoute);
+          });
+        }
+
+        if (townOrder.length > 1) {
+          fetchOSRMRoute(townOrder, route => townRoute = route);
+        }
+
+        document.getElementById('legend').innerHTML =
+          `<strong>Total Pubs Visited:</strong> ${totalPubs}<br><strong>Total Pints:</strong> ${totalPints}`;
+      });
+  </script>
+</body>
+</html>
