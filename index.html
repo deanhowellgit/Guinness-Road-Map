@@ -66,6 +66,18 @@
     let townRoute = null;
     let pubRoute = null;
 
+    const BING_API_KEY = 'FDPCZJZF2jCRnnf0M30nuItOc21AaVpwBtGhSak0KxfiHW9fg7D8JQQJ99BEACL93NaXJ3w3AAAEACOGGLoY';
+    const BING_ENDPOINT = 'https://guinness-cognitive.cognitiveservices.azure.com';
+
+    async function fetchBingImage(pub) {
+      const query = encodeURIComponent(`${pub.pub} ${pub.town} Ireland pub`);
+      const res = await fetch(`${BING_ENDPOINT}/bing/v7.0/images/search?q=${query}&count=1`, {
+        headers: { 'Ocp-Apim-Subscription-Key': BING_API_KEY }
+      });
+      const data = await res.json();
+      return data?.value?.[0]?.thumbnailUrl || '';
+    }
+
     function createScaledIcon(pints) {
       const size = 20 + pints * 3;
       return L.icon({
@@ -85,8 +97,8 @@
       });
     }
 
-    function createPopupContent(pub) {
-      const img = pub.image ? `<img src="${pub.image}" alt="${pub.pub}" />` : '';
+    function createPopupContent(pub, imageUrl) {
+      const img = imageUrl ? `<img src="${imageUrl}" alt="${pub.pub}" />` : '';
       return `
         <div class="popup-content">
           ${img}
@@ -125,7 +137,7 @@
 
     fetch('pubs.json')
       .then(response => response.json())
-      .then(pubs => {
+      .then(async pubs => {
         pubs.forEach(pub => {
           if (pub.pints > 0) totalPubs++;
           totalPints += pub.pints;
@@ -147,10 +159,15 @@
 
           activeTownMarkers.push(townMarker);
 
-          townMarkers[town] = pubsInTown.map(pub =>
-            L.marker([pub.lat, pub.lng], { icon: createScaledIcon(pub.pints) })
-              .bindPopup(createPopupContent(pub))
-          );
+          const fetchImageCache = {};
+          townMarkers[town] = await Promise.all(pubsInTown.map(async pub => {
+            if (!fetchImageCache[pub.pub]) {
+              fetchImageCache[pub.pub] = await fetchBingImage(pub);
+            }
+            const imageUrl = fetchImageCache[pub.pub];
+            return L.marker([pub.lat, pub.lng], { icon: createScaledIcon(pub.pints) })
+              .bindPopup(createPopupContent(pub, imageUrl));
+          }));
 
           townMarker.on('click', () => {
             resetMap();
