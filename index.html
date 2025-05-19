@@ -7,8 +7,9 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
   <style>
     body, html { margin: 0; padding: 0; height: 100%; }
-    #map { width: 100%; height: 100vh; }
+    #map { width: 100%; height: 100vh; z-index: 0; }
     .legend {
+      z-index: 1001;
       position: absolute;
       bottom: 10px;
       left: 10px;
@@ -38,7 +39,9 @@
       max-width: 200px;
     }
     .popup-content img {
-      width: 100%;
+      width: 180px;
+      height: 120px;
+      object-fit: cover;
       border-radius: 6px;
       margin-bottom: 6px;
     }
@@ -46,7 +49,7 @@
 </head>
 <body>
   <div id="map"></div>
-  <div class="legend" id="legend"></div>
+  <div class="legend" id="legend" style="display: block;"></div>
   <button onclick="resetMap()" class="reset-btn">Reset View</button>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
@@ -66,19 +69,7 @@
     let townRoute = null;
     let pubRoute = null;
 
-    const BING_API_KEY = 'FDPCZJZF2jCRnnf0M30nuItOc21AaVpwBtGhSak0KxfiHW9fg7D8JQQJ99BEACL93NaXJ3w3AAAEACOGGLoY';
-    const BING_ENDPOINT = 'https://guinness-cognitive.cognitiveservices.azure.com';
-
-    async function fetchBingImage(pub) {
-      const query = encodeURIComponent(`${pub.pub} ${pub.town} Ireland pub`);
-      const res = await fetch(`${BING_ENDPOINT}/bing/v7.0/images/search?q=${query}&count=1`, {
-        headers: { 'Ocp-Apim-Subscription-Key': BING_API_KEY }
-      });
-      const data = await res.json();
-      return data?.value?.[0]?.thumbnailUrl || '';
-    }
-
-    function createScaledIcon(pints) {
+        function createScaledIcon(pints) {
       const size = 20 + pints * 3;
       return L.icon({
         iconUrl: 'images/guinnessharp.svg',
@@ -133,6 +124,43 @@
         pubRoute = null;
       }
       activePubMarkers = [];
+      activeTownMarkers = [];
+      for (const town in townGroups) {
+        const pubsInTown = townGroups[town];
+        const townLat = pubsInTown[0].lat;
+        const townLng = pubsInTown[0].lng;
+        const townMarker = L.marker([townLat, townLng], { icon: createTownIcon() })
+          .addTo(map)
+          .bindPopup(`<strong>${town}</strong><br>Click to explore pubs`);
+        activeTownMarkers.push(townMarker);
+
+        townMarker.on('click', () => {
+          const townPubs = townGroups[town];
+          const townPints = townPubs.reduce((sum, p) => sum + p.pints, 0);
+          const townPubCount = townPubs.length;
+          resetMap();
+          const coords = townGroups[town].map(p => [p.lat, p.lng]);
+          const bounds = L.latLngBounds(coords);
+          map.fitBounds(bounds.pad(0.2));
+          document.getElementById('legend').innerHTML =
+            `<strong>${town}</strong><br><strong>Pubs:</strong> ${townPubCount}<br><strong>Pints:</strong> ${townPints}`;
+          map.removeLayer(townMarker);
+          activeTownMarkers = activeTownMarkers.filter(m => m !== townMarker);
+          townMarkers[town].forEach(marker => {
+            marker.addTo(map);
+            activePubMarkers.push(marker);
+          });
+          if (coords.length > 1) {
+            fetchOSRMRoute(coords, route => pubRoute = route);
+          }
+          if (townRoute) map.removeLayer(townRoute);
+        });
+      }
+      document.getElementById('legend').style.display = 'block';
+      document.getElementById('legend').innerHTML = `<strong>Total Pubs Visited:</strong> ${totalPubs}<br><strong>Total Pints:</strong> ${totalPints}`;
+      document.getElementById('legend').style.display = 'block';
+      document.getElementById('legend').innerHTML = `<strong>Total Pubs Visited:</strong> ${totalPubs}<br><strong>Total Pints:</strong> ${totalPints}`;
+      // always visible, no need to toggle display
     }
 
     fetch('pubs.json')
@@ -160,28 +188,35 @@
           activeTownMarkers.push(townMarker);
 
           const fetchImageCache = {};
-          townMarkers[town] = await Promise.all(pubsInTown.map(async pub => {
-            if (!fetchImageCache[pub.pub]) {
-              fetchImageCache[pub.pub] = await fetchBingImage(pub);
-            }
-            const imageUrl = fetchImageCache[pub.pub];
+          townMarkers[town] = pubsInTown.map(pub => {
+            const imageUrl = pub.image || 'https://via.placeholder.com/200x120?text=No+Image';
             return L.marker([pub.lat, pub.lng], { icon: createScaledIcon(pub.pints) })
               .bindPopup(createPopupContent(pub, imageUrl));
-          }));
+          });
 
           townMarker.on('click', () => {
+            const townPubs = townGroups[town];
+            const townPints = townPubs.reduce((sum, p) => sum + p.pints, 0);
+            const townPubCount = townPubs.length;
             resetMap();
-            map.setView([townLat, townLng], 14);
+            // Calculate bounds for pubs in the town
+            const coords = townGroups[town].map(p => [p.lat, p.lng]);
+            const bounds = L.latLngBounds(coords);
+            map.fitBounds(bounds.pad(0.2));
+            document.getElementById('legend').style.display = 'block';
+            document.getElementById('legend').innerHTML =
+              `<strong>${town}</strong><br><strong>Pubs:</strong> ${townPubCount}<br><strong>Pints:</strong> ${townPints}`;
+            // temporarily hide town icon
             map.removeLayer(townMarker);
+            // icon will be restored only via resetMap
             activeTownMarkers = activeTownMarkers.filter(m => m !== townMarker);
             townMarkers[town].forEach(marker => {
               marker.addTo(map);
               activePubMarkers.push(marker);
             });
 
-            const pubCoords = townGroups[town].map(p => [p.lat, p.lng]);
-            if (pubCoords.length > 1) {
-              fetchOSRMRoute(pubCoords, route => pubRoute = route);
+            if (coords.length > 1) {
+              fetchOSRMRoute(coords, route => pubRoute = route);
             }
             if (townRoute) map.removeLayer(townRoute);
           });
@@ -191,8 +226,8 @@
           fetchOSRMRoute(townOrder, route => townRoute = route);
         }
 
-        document.getElementById('legend').innerHTML =
-          `<strong>Total Pubs Visited:</strong> ${totalPubs}<br><strong>Total Pints:</strong> ${totalPints}`;
+        document.getElementById('legend').style.display = 'block';
+        document.getElementById('legend').innerHTML = `<strong>Total Pubs Visited:</strong> ${totalPubs}<br><strong>Total Pints:</strong> ${totalPints}`;
       });
   </script>
 </body>
